@@ -32,16 +32,16 @@ const OUTCOMES = {
     tier: "Premium", features: PREMIUM_FEATURES, color: "#2563eb",
   },
   runway_extension: {
-    icon: "🛤️", label: "6 months of Ultra free",  sub: "Our most powerful tier, zero cost.",
-    tier: "Ultra",   features: ULTRA_FEATURES,   color: "#0891b2",
+    icon: "🛤️", label: "6 months of Ultra free", sub: "Our most powerful tier, zero cost.",
+    tier: "Ultra", features: ULTRA_FEATURES, color: "#0891b2",
   },
   olive_branch: {
-    icon: "🫱",  label: "$80 Uber Eats credit",   sub: "A genuine apology.",
-    tier: null,  features: [],                   color: "#059669",
+    icon: "🫱", label: "$80 Uber Eats credit", sub: "A genuine apology.",
+    tier: null, features: [], color: "#059669",
   },
   hard_exit: {
-    icon: "👋",  label: "Safe travels",           sub: "We hope you'll be back.",
-    tier: null,  features: [],                   color: "#6b7280",
+    icon: "👋", label: "Safe travels", sub: "We hope you'll be back.",
+    tier: null, features: [], color: "#6b7280",
   },
 };
 
@@ -60,15 +60,12 @@ export default function App() {
   const [outcomes, setOutcomes]      = useState(null);
   const [chosenOffer, setChosenOffer] = useState(null);
   const [email, setEmail]            = useState("");
-  const [transcript, setTranscript]  = useState("");
   const convRef                      = useRef(null);
 
   const reason = REASONS.find(r => r.id === selected);
 
   const handleCallEnd = useCallback((raw = "") => {
-    setTranscript(raw);
     setCallStatus("ended");
-
     const match = raw.match(/OUTCOME:\s*(\{.*?\})/s);
     let parsed = null;
     if (match) { try { parsed = JSON.parse(match[1]); } catch (_) {} }
@@ -77,24 +74,19 @@ export default function App() {
       parsed = { primary: fb[0], secondary: fb[1] };
     }
     setOutcomes(parsed);
-
     fetch(WEBHOOK_URL, {
       method: "POST",
       mode: "no-cors",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: selected, transcript: raw, outcomes: parsed }),
     }).catch(() => {});
-
-    setTimeout(() => setStep("outcome"), 1400);
+    setTimeout(() => setStep("outcome"), 1800);
   }, [selected]);
 
   const startConversation = useCallback(async (agentText) => {
     try {
-      // Dynamically import the ElevenLabs client SDK
       const { Conversation } = await import("@11labs/client");
-
       await navigator.mediaDevices.getUserMedia({ audio: true });
-
       const conv = await Conversation.startSession({
         agentId: AGENT_ID,
         dynamicVariables: { churn_reason: agentText },
@@ -108,12 +100,8 @@ export default function App() {
             convRef.current._transcript = (convRef.current._transcript || "") + " " + (msg.message || "");
           }
         },
-        onError: (err) => {
-          console.error("ElevenLabs error:", err);
-          handleCallEnd("");
-        },
+        onError: () => handleCallEnd(""),
       });
-
       convRef.current = conv;
       convRef.current._transcript = "";
     } catch (err) {
@@ -133,19 +121,15 @@ export default function App() {
     }
   }, [handleCallEnd]);
 
-  // Kick off the call as soon as the voice step mounts
   useEffect(() => {
     if (step === "voice" && reason && callStatus === "connecting") {
       startConversation(reason.agentText);
     }
   }, [step, reason, callStatus, startConversation]);
 
-  // Clean up if user navigates away mid-call
   useEffect(() => {
     return () => {
-      if (convRef.current) {
-        try { convRef.current.endSession(); } catch (_) {}
-      }
+      if (convRef.current) { try { convRef.current.endSession(); } catch (_) {} }
     };
   }, []);
 
@@ -167,9 +151,9 @@ export default function App() {
         )}
         {step === "voice" && reason && (
           <VoiceStep
-            reason={reason}
             callStatus={callStatus}
-            onSkip={stopConversation}
+            onEndCall={stopConversation}
+            onSkip={() => { stopConversation(); }}
           />
         )}
         {step === "outcome" && (
@@ -251,7 +235,7 @@ function SelectStep({ onSelect }) {
 }
 
 // ── 3. INCENTIVE ──────────────────────────────────────────────────────────────
-function IncentiveStep({ reason, onStart, onSkip }) {
+function IncentiveStep({ onStart, onSkip }) {
   const [hov, setHov] = useState(false);
   return (
     <div style={s.body}>
@@ -274,12 +258,17 @@ function IncentiveStep({ reason, onStart, onSkip }) {
 }
 
 // ── 4. VOICE CALL ─────────────────────────────────────────────────────────────
-function VoiceStep({ reason, callStatus, onSkip }) {
-  const [bars, setBars] = useState(Array(12).fill(0.15));
-  const raf = useRef(null);
+function VoiceStep({ callStatus, onEndCall, onSkip }) {
+  const [bars, setBars]     = useState(Array(12).fill(0.15));
+  const [fading, setFading] = useState(false);
+  const raf                 = useRef(null);
+
+  const active  = callStatus === "active";
+  const ended   = callStatus === "ended";
+  const waiting = callStatus === "connecting" || callStatus === "idle";
 
   useEffect(() => {
-    if (callStatus === "active") {
+    if (active) {
       const tick = () => {
         setBars(p => p.map(b => b + (0.1 + Math.random() * 0.85 - b) * 0.28));
         raf.current = requestAnimationFrame(tick);
@@ -290,13 +279,29 @@ function VoiceStep({ reason, callStatus, onSkip }) {
       setBars(Array(12).fill(0.12));
     }
     return () => cancelAnimationFrame(raf.current);
-  }, [callStatus]);
+  }, [active]);
 
-  const active = callStatus === "active";
-  const ended  = callStatus === "ended";
+  // When agent ends naturally → fade out then transition
+  useEffect(() => {
+    if (ended) setFading(true);
+  }, [ended]);
+
+  const handleEndCall = () => {
+    setFading(true);
+    setTimeout(() => onEndCall(), 1000);
+  };
 
   return (
-    <div style={{ ...s.body, alignItems: "center", textAlign: "center" }}>
+    <div style={{
+      ...s.body,
+      alignItems: "center",
+      textAlign: "center",
+      opacity: fading ? 0 : 1,
+      transform: fading ? "scale(0.97)" : "scale(1)",
+      transition: fading ? "opacity 0.9s ease, transform 0.9s ease" : "none",
+    }}>
+
+      {/* Orb */}
       <div style={{
         ...s.orb,
         borderColor: active ? "#bfdbfe" : ended ? "#bbf7d0" : "#e5e7eb",
@@ -321,12 +326,28 @@ function VoiceStep({ reason, callStatus, onSkip }) {
         </div>
       </div>
 
+      {/* Status label */}
       <p style={{ ...s.orbLabel, marginTop: 20 }}>
-        {ended ? "Wrapping up..." : active ? "Listening" : "Connecting..."}
+        {ended   ? "Call complete"  :
+         active  ? "Listening"      :
+                   "Connecting..."}
       </p>
 
+      {/* "You can end the call now" nudge — shown when agent finishes */}
+      {ended && (
+        <p style={s.endNudge}>You can end the call now</p>
+      )}
+
+      {/* End call button — shown while active or ended */}
+      {(active || ended) && (
+        <button style={s.endCallBtn} onClick={handleEndCall}>
+          End call
+        </button>
+      )}
+
+      {/* Skip link — shown while connecting or active, not after ended */}
       {!ended && (
-        <button style={{ ...s.textBtn, marginTop: 24 }} onClick={onSkip}>
+        <button style={{ ...s.textBtn, marginTop: 14 }} onClick={onSkip}>
           Skip to offer
         </button>
       )}
@@ -379,7 +400,12 @@ function OfferRow({ cfg, id, featured, onChoose }) {
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <p style={s.offerLabel}>{cfg.label}</p>
               {cfg.tier && (
-                <span style={{ ...s.tierBadge, background: featured ? cfg.color + "18" : "#f3f4f6", color: featured ? cfg.color : "#6b7280", borderColor: featured ? cfg.color + "40" : "#e5e7eb" }}>
+                <span style={{
+                  ...s.tierBadge,
+                  background:  featured ? cfg.color + "18" : "#f3f4f6",
+                  color:       featured ? cfg.color : "#6b7280",
+                  borderColor: featured ? cfg.color + "40" : "#e5e7eb",
+                }}>
                   {cfg.tier}
                 </span>
               )}
@@ -428,7 +454,7 @@ function OfferRow({ cfg, id, featured, onChoose }) {
 
 // ── 6. CLAIM ──────────────────────────────────────────────────────────────────
 function ClaimStep({ offer, email, setEmail, onClaim }) {
-  const valid = email.includes("@") && email.includes(".");
+  const valid     = email.includes("@") && email.includes(".");
   const [hov, setHov] = useState(false);
   return (
     <div style={s.body}>
@@ -532,6 +558,19 @@ const s = {
   waveRow:  { display: "flex", alignItems: "flex-end", gap: 2.5, height: 30 },
   waveBar:  { width: 3, borderRadius: 3, minHeight: 3 },
   orbLabel: { fontSize: 13, color: "#9ca3af", margin: 0 },
+
+  endNudge: {
+    fontSize: 12, color: "#16a34a", margin: "8px 0 0",
+    fontWeight: 500,
+  },
+  endCallBtn: {
+    marginTop: 20,
+    background: "#fee2e2", color: "#dc2626",
+    border: "1px solid #fecaca", borderRadius: 7,
+    padding: "10px 28px", fontSize: 14, fontWeight: 500,
+    cursor: "pointer", fontFamily: "inherit",
+    transition: "background 0.1s",
+  },
 
   offerRow:   { border: "1px solid", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, transition: "background 0.1s" },
   offerLeft:  { display: "flex", alignItems: "center", gap: 12, flex: 1 },
