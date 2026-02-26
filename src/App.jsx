@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const BRAND       = "IceCubeTimer";
 const AGENT_ID    = "agent_8201kjbxrhm2e55ae19ba8nm4f8z";
@@ -11,20 +11,38 @@ const REASONS = [
   { id: "other",   label: "Something else",               agentText: "something else came up" },
 ];
 
+const PREMIUM_FEATURES = [
+  { icon: "🧠", title: "Predictive Freeze Intelligence",  desc: "AI that adapts to your freezer load, door openings, ambient temp, and compressor cycles." },
+  { icon: "🧪", title: "Water & Ice Quality Analytics",  desc: "Mineral content detection, filtration tips, ice clarity scoring." },
+  { icon: "📊", title: "Freezer Performance Reports",    desc: "Weekly reports on energy efficiency, compressor health, and estimated cost savings." },
+  { icon: "🔔", title: "Push Notifications",             desc: "Alerts when your cubes are ready, and warnings if supply runs low." },
+  { icon: "📱", title: "Multi-tray Tracking",            desc: "Track up to 12 trays simultaneously with individual timers." },
+];
+
 const ULTRA_FEATURES = [
-  { icon: "🧠", title: "Predictive Freeze Intelligence",  desc: "AI that adapts to your freezer load, door openings, ambient temp, and compressor cycles. Forecasts availability for events." },
-  { icon: "🧊", title: "Smart Hardware Integration",      desc: "Bluetooth sensors for temperature, door detection, and tray weight. Automatic freeze-start detection." },
+  ...PREMIUM_FEATURES,
   { icon: "🥂", title: "Hospitality Mode",               desc: "Schedule events, auto-optimize freezing, get cocktail recommendations, and alerts if supply drops low." },
-  { icon: "🧪", title: "Water & Ice Quality Analytics",  desc: "Mineral content detection, filtration tips, ice clarity scoring, and luxury cube optimization." },
-  { icon: "📊", title: "Freezer Performance Reports",    desc: "Weekly reports on energy efficiency, compressor health, door-open heat loss, and estimated cost savings." },
+  { icon: "🧊", title: "Smart Hardware Integration",     desc: "Bluetooth sensors for temperature, door detection, and tray weight. Automatic freeze-start detection." },
   { icon: "🎙️", title: "AI Voice Assistant",             desc: "Ask 'When will my ice be ready?' or 'Do I have enough for tonight?' Smart suggestions included." },
 ];
 
 const OUTCOMES = {
-  professional_pivot: { icon: "🚀", label: "1 month free",         sub: "Full Premium, on us.",         color: "#2563eb" },
-  runway_extension:   { icon: "🛤️", label: "6 months free",        sub: "Take the time you need.",      color: "#0891b2" },
-  olive_branch:       { icon: "🫱",  label: "$80 Uber Eats credit", sub: "A genuine apology.",           color: "#059669" },
-  hard_exit:          { icon: "👋",  label: "Safe travels",         sub: "We hope you'll be back.",      color: "#6b7280" },
+  professional_pivot: {
+    icon: "🚀", label: "1 month of Premium free", sub: "Full Premium, on us.",
+    tier: "Premium", features: PREMIUM_FEATURES, color: "#2563eb",
+  },
+  runway_extension: {
+    icon: "🛤️", label: "6 months of Ultra free",  sub: "Our most powerful tier, zero cost.",
+    tier: "Ultra",   features: ULTRA_FEATURES,   color: "#0891b2",
+  },
+  olive_branch: {
+    icon: "🫱",  label: "$80 Uber Eats credit",   sub: "A genuine apology.",
+    tier: null,  features: [],                   color: "#059669",
+  },
+  hard_exit: {
+    icon: "👋",  label: "Safe travels",           sub: "We hope you'll be back.",
+    tier: null,  features: [],                   color: "#6b7280",
+  },
 };
 
 const FALLBACK = {
@@ -34,6 +52,7 @@ const FALLBACK = {
   other:   ["olive_branch",       "professional_pivot"],
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [step, setStep]              = useState("features");
   const [selected, setSelected]      = useState(null);
@@ -41,49 +60,94 @@ export default function App() {
   const [outcomes, setOutcomes]      = useState(null);
   const [chosenOffer, setChosenOffer] = useState(null);
   const [email, setEmail]            = useState("");
+  const [transcript, setTranscript]  = useState("");
+  const convRef                      = useRef(null);
 
   const reason = REASONS.find(r => r.id === selected);
 
-  useEffect(() => {
-    if (!document.getElementById("el-script")) {
-      const el = document.createElement("script");
-      el.id = "el-script";
-      el.src = "https://elevenlabs.io/convai-widget/index.js";
-      el.async = true;
-      document.body.appendChild(el);
-    }
-  }, []);
+  const handleCallEnd = useCallback((raw = "") => {
+    setTranscript(raw);
+    setCallStatus("ended");
 
+    const match = raw.match(/OUTCOME:\s*(\{.*?\})/s);
+    let parsed = null;
+    if (match) { try { parsed = JSON.parse(match[1]); } catch (_) {} }
+    if (!parsed) {
+      const fb = FALLBACK[selected] || ["professional_pivot", "runway_extension"];
+      parsed = { primary: fb[0], secondary: fb[1] };
+    }
+    setOutcomes(parsed);
+
+    fetch(WEBHOOK_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: selected, transcript: raw, outcomes: parsed }),
+    }).catch(() => {});
+
+    setTimeout(() => setStep("outcome"), 1400);
+  }, [selected]);
+
+  const startConversation = useCallback(async (agentText) => {
+    try {
+      // Dynamically import the ElevenLabs client SDK
+      const { Conversation } = await import("@11labs/client");
+
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      const conv = await Conversation.startSession({
+        agentId: AGENT_ID,
+        dynamicVariables: { churn_reason: agentText },
+        onConnect: () => setCallStatus("active"),
+        onDisconnect: () => {
+          const raw = convRef.current?._transcript || "";
+          handleCallEnd(raw);
+        },
+        onMessage: (msg) => {
+          if (msg.type === "transcript" && convRef.current) {
+            convRef.current._transcript = (convRef.current._transcript || "") + " " + (msg.message || "");
+          }
+        },
+        onError: (err) => {
+          console.error("ElevenLabs error:", err);
+          handleCallEnd("");
+        },
+      });
+
+      convRef.current = conv;
+      convRef.current._transcript = "";
+    } catch (err) {
+      console.error("Failed to start conversation:", err);
+      setCallStatus("idle");
+    }
+  }, [handleCallEnd]);
+
+  const stopConversation = useCallback(async () => {
+    if (convRef.current) {
+      try { await convRef.current.endSession(); } catch (_) {}
+      const raw = convRef.current._transcript || "";
+      convRef.current = null;
+      handleCallEnd(raw);
+    } else {
+      handleCallEnd("");
+    }
+  }, [handleCallEnd]);
+
+  // Kick off the call as soon as the voice step mounts
   useEffect(() => {
-    if (step !== "voice") return;
-    const h = (e) => {
-      const d = e.detail || {};
-      if (d.status === "connecting" || d.type === "conversation_start") setCallStatus("active");
-      if (d.type === "conversation_end" || d.status === "ended") {
-        const raw = d.transcript || d.full_transcript || "";
-        setCallStatus("ended");
-        const match = raw.match(/OUTCOME:\s*(\{.*?\})/s);
-        let parsed = null;
-        if (match) { try { parsed = JSON.parse(match[1]); } catch (_) {} }
-        if (!parsed) {
-          const fb = FALLBACK[selected] || ["professional_pivot", "runway_extension"];
-          parsed = { primary: fb[0], secondary: fb[1] };
-        }
-        setOutcomes(parsed);
-        if (WEBHOOK_URL !== "YOUR_WEBHOOK_URL") {
-          fetch(WEBHOOK_URL, {
-            method: "POST",
-            mode: "no-cors",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ reason: selected, transcript: raw, outcomes: parsed }),
-          }).catch(() => {});
-        }
-        setTimeout(() => setStep("outcome"), 1400);
+    if (step === "voice" && reason && callStatus === "connecting") {
+      startConversation(reason.agentText);
+    }
+  }, [step, reason, callStatus, startConversation]);
+
+  // Clean up if user navigates away mid-call
+  useEffect(() => {
+    return () => {
+      if (convRef.current) {
+        try { convRef.current.endSession(); } catch (_) {}
       }
     };
-    window.addEventListener("elevenlabs-convai", h);
-    return () => window.removeEventListener("elevenlabs-convai", h);
-  }, [step, selected]);
+  }, []);
 
   return (
     <div style={s.root}>
@@ -105,7 +169,7 @@ export default function App() {
           <VoiceStep
             reason={reason}
             callStatus={callStatus}
-            onSkip={() => { setOutcomes(null); setStep("outcome"); }}
+            onSkip={stopConversation}
           />
         )}
         {step === "outcome" && (
@@ -261,14 +325,6 @@ function VoiceStep({ reason, callStatus, onSkip }) {
         {ended ? "Wrapping up..." : active ? "Listening" : "Connecting..."}
       </p>
 
-      <div style={{ height: 0, overflow: "hidden" }}>
-        {/* eslint-disable-next-line */}
-        <elevenlabs-convai
-          agent-id={AGENT_ID}
-          dynamic-variables={JSON.stringify({ churn_reason: reason.agentText })}
-        />
-      </div>
-
       {!ended && (
         <button style={{ ...s.textBtn, marginTop: 24 }} onClick={onSkip}>
           Skip to offer
@@ -304,23 +360,30 @@ function OutcomeStep({ outcomes, selected, onChoose, onDecline }) {
 function OfferRow({ cfg, id, featured, onChoose }) {
   const [hov, setHov]           = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const showFeatures = id === "professional_pivot" || id === "runway_extension";
+  const showFeatures = cfg.features && cfg.features.length > 0;
 
   return (
     <div style={{
       ...s.offerRow,
-      borderColor:  featured ? cfg.color : "#e5e7eb",
-      borderWidth:  featured ? 1.5 : 1,
+      borderColor:   featured ? cfg.color : "#e5e7eb",
+      borderWidth:   featured ? 1.5 : 1,
       flexDirection: "column",
-      alignItems:   "stretch",
-      padding:      0,
-      overflow:     "hidden",
+      alignItems:    "stretch",
+      padding:       0,
+      overflow:      "hidden",
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "13px 14px" }}>
         <div style={s.offerLeft}>
           <span style={{ fontSize: 20 }}>{cfg.icon}</span>
           <div>
-            <p style={s.offerLabel}>{cfg.label}</p>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <p style={s.offerLabel}>{cfg.label}</p>
+              {cfg.tier && (
+                <span style={{ ...s.tierBadge, background: featured ? cfg.color + "18" : "#f3f4f6", color: featured ? cfg.color : "#6b7280", borderColor: featured ? cfg.color + "40" : "#e5e7eb" }}>
+                  {cfg.tier}
+                </span>
+              )}
+            </div>
             <p style={s.offerSub}>{cfg.sub}</p>
           </div>
         </div>
@@ -342,11 +405,11 @@ function OfferRow({ cfg, id, featured, onChoose }) {
       {showFeatures && (
         <>
           <button style={s.seeFeatures} onClick={() => setExpanded(e => !e)}>
-            {expanded ? "Hide features ↑" : "See what's included ↓"}
+            {expanded ? "Hide features ↑" : `See what's in ${cfg.tier} ↓`}
           </button>
           {expanded && (
             <div style={s.featureDrawer}>
-              {ULTRA_FEATURES.map(f => (
+              {cfg.features.map(f => (
                 <div key={f.title} style={s.drawerRow}>
                   <span style={s.drawerIcon}>{f.icon}</span>
                   <div>
@@ -474,6 +537,7 @@ const s = {
   offerLeft:  { display: "flex", alignItems: "center", gap: 12, flex: 1 },
   offerLabel: { fontSize: 14, fontWeight: 600, color: "#111827", margin: 0 },
   offerSub:   { fontSize: 12, color: "#9ca3af", margin: "2px 0 0" },
+  tierBadge:  { fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 100, border: "1px solid", letterSpacing: "0.04em" },
   claimBtn:   { border: "none", borderRadius: 6, padding: "7px 14px", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "inherit", flexShrink: 0, transition: "filter 0.1s", whiteSpace: "nowrap" },
 
   seeFeatures:   { background: "none", border: "none", borderTop: "1px solid #f3f4f6", padding: "9px 14px", fontSize: 12, color: "#6b7280", cursor: "pointer", textAlign: "left", fontFamily: "inherit", width: "100%", transition: "background 0.1s" },
