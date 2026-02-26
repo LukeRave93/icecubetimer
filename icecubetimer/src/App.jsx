@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 const BRAND       = "IceCubeTimer";
 const AGENT_ID    = "agent_8201kjbxrhm2e55ae19ba8nm4f8z";
-const WEBHOOK_URL = "YOUR_WEBHOOK_URL";
+const WEBHOOK_URL = "Yhttps://script.google.com/macros/s/AKfycbzgdNqZmOgUvYHbwMcok1XDIT3HJD8sK3bbyI5GlxoEUVKXdZ_LJ70_G7P8wgwYkpVe/exec";
 
 const REASONS = [
   { id: "cheaper", label: "Found a cheaper alternative",  agentText: "you found a cheaper alternative" },
